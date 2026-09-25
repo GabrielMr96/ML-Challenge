@@ -5,7 +5,7 @@ import sqlite3
 import queue
 import threading
 import time
-from scapy.all import get_if_list, conf
+from scapy.all import get_if_list, conf, sniff, IP, TCP, UDP, ICMP
 
 # Redirecionado para stdout para garantir que os logs não fiquem presos no buffer do SO quando a aplicação for empacotada no Docker.
 logging.basicConfig(
@@ -109,27 +109,79 @@ def resolve_interface(target_iface):
         logger.critical(f"Falha catastrofica ao enumerar interfaces de rede: {e}")
         sys.exit(1)
 
+def parse_protocol(packet):
+    """
+    Padroniza a leitura da Camada 4 OSI.
+    Usa fallback no pacote IP para evitar perdas analiticas caso o trafego nao seja TCP/UDP/ICMP.
+    """
+    if TCP in packet:
+        return "TCP"
+    elif UDP in packet:
+        return "UDP"
+    elif ICMP in packet:
+        return "ICMP"
+    elif packet.haslayer(IP):
+        proto_num = packet[IP].proto
+        return f"OTHER({proto_num})"
+    return "UNKNOWN"
+
+def process_packet(packet):
+    """
+    Callback de altissima velocidade acionado pelo kernel via Scapy.
+    Delega o I/O imediatamente para a fila assincrona para nao gargalar o motor de captura.
+    """
+    if IP in packet:
+        packet_info = {
+            "src_ip": packet[IP].src,
+            "dst_ip": packet[IP].dst,
+            "protocol": parse_protocol(packet),
+            "size": len(packet)
+        }
+        try:
+            # put_nowait garante que a thread do sniffer volte a ouvir a placa no microssegundo seguinte.
+            PACKET_QUEUE.put_nowait(packet_info)
+        except queue.Full:
+            # Em cenarios de DDoS ou rajadas brutais, descartamos o pacote na RAM em vez de travar o SO.
+            pass
+
+def start_sniffer(interface):
+    """
+    Engatilha o motor do Scapy com filtragem otimizada.
+    """
+    logger.info(f"Iniciando interceptacao passiva de pacotes na interface: {interface}")
+    try:
+        # filter="ip" (Sintaxe BPF) instrui a libpcap a ignorar lixo de Camada 2 (ex: ARP, STP) antes mesmo de subir pro Python, economizando CPU.
+        # stop_filter avalia constantemente a flag do evento global para interromper o laço bloqueante do sniff.
+        sniff(
+            iface=interface,
+            filter="ip",
+            prn=process_packet,
+            store=False,
+            stop_filter=lambda x: STOP_EVENT.is_set()
+        )
+    except Exception as e:
+        logger.error(f"Quebra fatal no subsistema de captura do Scapy: {e}")
+        STOP_EVENT.set()
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Analisador de Trafego de Rede (Challenge Mercado Livre)")
     parser.add_argument("-i", "--interface", required=True, help="Interface de rede para escuta (ex: eth1, Wi-Fi)")
     args = parser.parse_args()
 
     active_iface = resolve_interface(args.interface)
-    logger.info(f"Motor engatilhado para escutar a interface: {active_iface}")
-
     init_db()
 
-    # Inicia a thread que consome os dados em background
+    # Orquestracao da concorrencia produtor-consumidor
     writer_thread = threading.Thread(target=db_writer_worker, daemon=True)
     writer_thread.start()
 
     try:
-        # Mantenha a thread principal viva artificialmente por enquanto, pois o Scapy ainda nao ta aqui
-        while True:
-            time.sleep(1)
+        # O processamento primario assume a thread principal
+        start_sniffer(active_iface)
     except KeyboardInterrupt:
-        logger.info("Recebido CTRL+C. Iniciando desligamento coordenado...")
+        logger.info("Recebido sinal SIGINT (CTRL+C). Coordenando encerramento...")
         STOP_EVENT.set()
+    finally:
         writer_thread.join()
-        logger.info("Processo finalizado sem corrupcao de disco.")
+        logger.info("Operacao finalizada de forma limpida.")
         sys.exit(0)

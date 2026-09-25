@@ -5,6 +5,7 @@ import sqlite3
 import queue
 import threading
 import time
+from datetime import datetime
 from scapy.all import get_if_list, conf, sniff, IP, TCP, UDP, ICMP
 
 # Redirecionado para stdout para garantir que os logs não fiquem presos no buffer do SO quando a aplicação for empacotada no Docker.
@@ -163,25 +164,76 @@ def start_sniffer(interface):
         logger.error(f"Quebra fatal no subsistema de captura do Scapy: {e}")
         STOP_EVENT.set()
 
+def display_statistics():
+    """
+    Gera estatísticas consolidadas consultando o banco periodicamente.
+    """
+    while not STOP_EVENT.is_set():
+        try:
+            # Por que: O sleep fora do processamento alivia a CPU e dá tempo para o banco aglomerar dados estatiscamente relevantes.
+            time.sleep(10)
+            if STOP_EVENT.is_set():
+                break
+                
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            
+            logging.info(f"\n--- Estatísticas de Tráfego: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---")
+            
+            # Por que: SELECT COUNT(1) consulta os metadados da tabela, tornando-se instantâneo independente do gigantismo do banco.
+            cursor.execute("SELECT COUNT(1) FROM captured_packets")
+            total = cursor.fetchone()[0]
+            logging.info(f"Total de Pacotes Capturados: {total}")
+            
+            # Por que: Delegar o GROUP BY ao motor em C do SQLite anula o uso de memória RAM do interpretador Python.
+            cursor.execute("SELECT protocol, COUNT(1) as cnt FROM captured_packets GROUP BY protocol ORDER BY cnt DESC")
+            logging.info("\nDistribuição por Protocolo:")
+            for proto, count in cursor.fetchall():
+                logging.info(f"  - {proto}: {count} pacotes")
+                
+            # Por que: A indexação B-Tree transforma a ordenação temporal numa operação logarítmica O(log N).
+            cursor.execute("SELECT src_ip, COUNT(1) as cnt FROM captured_packets GROUP BY src_ip ORDER BY cnt DESC LIMIT 5")
+            logging.info("\nTop 5 Origens (Mais Tráfego):")
+            for idx, (ip, count) in enumerate(cursor.fetchall(), 1):
+                logging.info(f"  {idx}. {ip} -> {count} pacotes")
+                
+            cursor.execute("SELECT dst_ip, COUNT(1) as cnt FROM captured_packets GROUP BY dst_ip ORDER BY cnt DESC LIMIT 5")
+            logging.info("\nTop 5 Destinos (Mais Tráfego):")
+            for idx, (ip, count) in enumerate(cursor.fetchall(), 1):
+                logging.info(f"  {idx}. {ip} -> {count} pacotes")
+                
+            logging.info("-" * 50)
+            
+        except sqlite3.Error as e:
+            logging.error(f"Erro na extração de estatísticas: {e}")
+        finally:
+            if 'conn' in locals() and conn:
+                conn.close()
+
 if __name__ == "__main__":
+    import argparse
+    
     parser = argparse.ArgumentParser(description="Analisador de Trafego de Rede (Challenge Mercado Livre)")
-    parser.add_argument("-i", "--interface", required=True, help="Interface de rede para escuta (ex: eth1, Wi-Fi)")
+    parser.add_argument("-i", "--interface", required=True, help="Interface de rede para escuta (ex: eth0, Wi-Fi)")
     args = parser.parse_args()
 
-    active_iface = resolve_interface(args.interface)
+    # Mantendo a validação robusta das placas antes de iniciar
+    INTERFACE = resolve_interface(args.interface)
+
     init_db()
-
-    # Orquestracao da concorrencia produtor-consumidor
+    
+    # Por que: Threads daemon são destruídas pelo SO quando o processo pai morre, prevenindo corrupção de transações no SQLite.
     writer_thread = threading.Thread(target=db_writer_worker, daemon=True)
+    stats_thread = threading.Thread(target=display_statistics, daemon=True)
+    
     writer_thread.start()
-
+    stats_thread.start()
+    
     try:
-        # O processamento primario assume a thread principal
-        start_sniffer(active_iface)
+        start_sniffer(INTERFACE)
     except KeyboardInterrupt:
-        logger.info("Recebido sinal SIGINT (CTRL+C). Coordenando encerramento...")
+        logging.info("\nSinal SIGINT detectado. Derrubando o boteco e descarregando as filas no disco...")
         STOP_EVENT.set()
-    finally:
         writer_thread.join()
-        logger.info("Operacao finalizada de forma limpida.")
+        stats_thread.join()
         sys.exit(0)

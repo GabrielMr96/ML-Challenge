@@ -43,3 +43,12 @@ docker run -it --rm \
 ### 3. Encerramento Elegante
 
 Pressione `Ctrl+C`. O sinal `SIGINT` é capturado por um evento de sincronização do Python (`threading.Event`), que orienta as threads a descarregarem os buffers restantes no disco de forma segura antes de fechar o banco de dados.
+
+### 4. Visualização de Estatísticas
+
+A aplicação não necessita de painéis externos ou consultas manuais. Uma *daemon thread* independente (motor analítico) faz um *polling* passivo no SQLite a cada **10 segundos** e imprime o relatório consolidado diretamente no console (stdout), exibindo:
+
+- Total absoluto de pacotes capturados.
+- Distribuição quantitativa por protocolos.
+- Top 5 Endereços IP de Origem (maior volume).
+- Top 5 Endereços IP de Destino (maior volume).

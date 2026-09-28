@@ -178,41 +178,39 @@ def display_statistics():
             conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
             
-            logging.info(f"\n--- Estatísticas de Tráfego: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---")
+            logger.info(f"\n--- Estatísticas de Tráfego: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---")
             
             # Por que: SELECT COUNT(1) consulta os metadados da tabela, tornando-se instantâneo independente do gigantismo do banco.
             cursor.execute("SELECT COUNT(1) FROM captured_packets")
             total = cursor.fetchone()[0]
-            logging.info(f"Total de Pacotes Capturados: {total}")
+            logger.info(f"Total de Pacotes Capturados: {total}")
             
             # Por que: Delegar o GROUP BY ao motor em C do SQLite anula o uso de memória RAM do interpretador Python.
             cursor.execute("SELECT protocol, COUNT(1) as cnt FROM captured_packets GROUP BY protocol ORDER BY cnt DESC")
-            logging.info("\nDistribuição por Protocolo:")
+            logger.info("\nDistribuição por Protocolo:")
             for proto, count in cursor.fetchall():
-                logging.info(f"  - {proto}: {count} pacotes")
+                logger.info(f"  - {proto}: {count} pacotes")
                 
             # Por que: A indexação B-Tree transforma a ordenação temporal numa operação logarítmica O(log N).
             cursor.execute("SELECT src_ip, COUNT(1) as cnt FROM captured_packets GROUP BY src_ip ORDER BY cnt DESC LIMIT 5")
-            logging.info("\nTop 5 Origens (Mais Tráfego):")
+            logger.info("\nTop 5 Origens (Mais Tráfego):")
             for idx, (ip, count) in enumerate(cursor.fetchall(), 1):
-                logging.info(f"  {idx}. {ip} -> {count} pacotes")
+                logger.info(f"  {idx}. {ip} -> {count} pacotes")
                 
             cursor.execute("SELECT dst_ip, COUNT(1) as cnt FROM captured_packets GROUP BY dst_ip ORDER BY cnt DESC LIMIT 5")
-            logging.info("\nTop 5 Destinos (Mais Tráfego):")
+            logger.info("\nTop 5 Destinos (Mais Tráfego):")
             for idx, (ip, count) in enumerate(cursor.fetchall(), 1):
-                logging.info(f"  {idx}. {ip} -> {count} pacotes")
+                logger.info(f"  {idx}. {ip} -> {count} pacotes")
                 
-            logging.info("-" * 50)
+            logger.info("-" * 50)
             
         except sqlite3.Error as e:
-            logging.error(f"Erro na extração de estatísticas: {e}")
+            logger.error(f"Erro na extração de estatísticas: {e}")
         finally:
             if 'conn' in locals() and conn:
                 conn.close()
 
 if __name__ == "__main__":
-    import argparse
-    
     parser = argparse.ArgumentParser(description="Analisador de Trafego de Rede (Challenge Mercado Livre)")
     parser.add_argument("-i", "--interface", required=True, help="Interface de rede para escuta (ex: eth0, Wi-Fi)")
     args = parser.parse_args()
@@ -232,7 +230,7 @@ if __name__ == "__main__":
     try:
         start_sniffer(INTERFACE)
     except KeyboardInterrupt:
-        logging.info("\nSinal SIGINT detectado. Derrubando o boteco e descarregando as filas no disco...")
+        logger.info("\nSinal SIGINT detectado. Derrubando o boteco e descarregando as filas no disco...")
         STOP_EVENT.set()
         writer_thread.join()
         stats_thread.join()

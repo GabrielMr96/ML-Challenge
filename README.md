@@ -35,6 +35,7 @@ docker run -it --rm \
 ```
 
 **Anatomia do Comando:**
+
 - `--network host`: Fura a bolha de rede do Docker, permitindo que a aplicação escute as interfaces reais da máquina (eth0, wlan0).
 - `--cap-add=NET_RAW`: Dá a autoridade estrita para o Scapy abrir sockets brutos (raw sockets) e farejar a rede.
 - `--cap-add=NET_ADMIN`: Permite a interação administrativa com as interfaces lógicas do sistema.
